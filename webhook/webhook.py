@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Request
 from aiogram.types import Update
-from main import bot, dp
+from bot.bot import bot
+from bot.bot import dp
 
 router = APIRouter()
 
