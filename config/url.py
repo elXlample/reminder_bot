@@ -1,1 +1,1 @@
-WEBHOOK_URL = "https://ai-assistant-pipeline.onrender.com"
+WEBHOOK_URL = "https://ai-assistant-pipeline.onrender.com/webhook"
