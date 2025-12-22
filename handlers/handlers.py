@@ -1,4 +1,4 @@
-from aiogram import Router,F
+from aiogram import Router, F
 import asyncio
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.types import Message, CallbackQuery
@@ -11,7 +11,7 @@ from keyboard.keyboard import (
     DateFactory,
 )
 from datetime import datetime
-from main import bot
+from bot.bot import bot
 
 message_router = Router()
 
@@ -20,6 +20,7 @@ class DatePicker(StatesGroup):
     reminder = State()
     pick_date = State()
     pick_time = State()
+
 
 async def schedule_reminder(bot, chat_id, todo, reminder_datetime):
     now = datetime.now()
