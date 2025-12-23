@@ -1,6 +1,7 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.filters.callback_data import CallbackData
+from datetime import datetime
 
 tomorrow_but = InlineKeyboardButton(text="tomorrow", callback_data="tomorrow")
 today_but = InlineKeyboardButton(text="today", callback_data="today")
@@ -27,12 +28,6 @@ months_kb = [
 ]
 back = InlineKeyboardButton(text="<", callback_data="<")
 forward = InlineKeyboardButton(text=">", callback_data=">")
-december = InlineKeyboardButton(text="December", callback_data="december")
-
-
-other_builder = InlineKeyboardBuilder()
-other_builder.row(back, december, forward)
-other_builder.row(*days, width=7)
 
 
 class DateFactory(CallbackData, prefix="months"):
@@ -60,9 +55,11 @@ months_days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 
 def create_kb_month(month_id: int, year: int) -> InlineKeyboardBuilder:
     kb = []
+    
+
     kb_builder = InlineKeyboardBuilder()
     days = months_days[month_id - 1]
-    month_button_text: str = months_names[month_id - 1] + str(year)
+    month_button_text: str = months_names[month_id - 1] +' ' +str(year)
     month_button = InlineKeyboardButton(
         text=month_button_text, callback_data=str(month_id - 1)
     )

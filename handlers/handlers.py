@@ -79,6 +79,7 @@ def register_handlers(message_router: Router, bot: Bot):
     async def other_date(callback: CallbackQuery, state: FSMContext):
         month = datetime.now().month
         year = datetime.now().year
+        await state.update_data(year=year)
         await state.update_data(current_month=month)
         await callback.message.edit_text(
             "Pick a date:",
@@ -87,14 +88,21 @@ def register_handlers(message_router: Router, bot: Bot):
             ).as_markup(),
         )
 
+    @message_router.message(StateFilter(DatePicker.pick_date))
+    async def wrong_content_date(message: Message):
+        await message.reply(
+            "Please, use an inline keyboard to pick a date or use cancel button"
+        )
+
     @message_router.callback_query(StateFilter(DatePicker.pick_date), F.data == ">")
     async def next_month(callback: CallbackQuery, state: FSMContext):
         data = await state.get_data()
         current_month = int(data["current_month"])
-        year = datetime.now().year
+        year = int(data["year"])
 
         if current_month > 12:
             year += 1
+            await state.update_data(year=year)
 
         next_month = (current_month + 1) % 12
         await callback.message.edit_text(
@@ -102,6 +110,33 @@ def register_handlers(message_router: Router, bot: Bot):
             reply_markup=create_kb_month(month_id=next_month, year=year).as_markup(),
         )
         await state.update_data(current_month=next_month)
+
+    @message_router.callback_query(StateFilter(DatePicker.pick_date), F.data == "<")
+    async def prev_month(callback: CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        current_month = int(data["current_month"])
+        year = int(data["year"])
+
+        if current_month < 0:
+            year -= 1
+            await state.update_data(year=year)
+
+        prev_month = (current_month - 1) % 12
+        await callback.message.edit_text(
+            text="Pick a date:",
+            reply_markup=create_kb_month(month_id=prev_month, year=year).as_markup(),
+        )
+        await state.update_data(current_month=prev_month)
+
+    @message_router.callback_query(
+        StateFilter(DatePicker.pick_date), F.data == "cancel"
+    )
+    async def cancel_data_pick(callback: CallbackQuery, state: FSMContext):
+        await state.set_state(default_state)
+        await callback.message.edit_text(
+            text="Data pick cancelled. To add new reminder use /remind"
+        )
+        await state.clear()
 
     @message_router.callback_query(
         StateFilter(DatePicker.pick_date), DateFactory.filter()
@@ -154,6 +189,16 @@ def register_handlers(message_router: Router, bot: Bot):
                 todo=todo,
                 reminder_datetime=reminder_datetime,
             )
+        )
+        await state.clear()
+
+    @message_router.message(
+        StateFilter(DatePicker.pick_time), Command(commands="cancel")
+    )
+    async def cancel_time_pick(message: Message, state: FSMContext):
+        await state.set_state(default_state)
+        await message.answer(
+            text="Time pick cancelled. To add new reminder use /remind"
         )
         await state.clear()
 
