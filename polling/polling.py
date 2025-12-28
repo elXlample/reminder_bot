@@ -1,13 +1,60 @@
+from config.config import Config, load_config
 import asyncio
 from bot.bot import bot, dp
+import logging
+import os
+import sys
+from sql.connection import get_pg_pool
+from redis.asyncio import Redis
+import psycopg_pool
+from aiogram.fsm.storage.redis import RedisStorage
+from middlewares.db_middlewares import DataBaseMiddleware
+from middlewares.activity_middleware import ActivityCounterMiddleware
+
+logger = logging.getLogger(__name__)
 
 
-async def main():
+config: Config = load_config()
+logging.basicConfig(
+    level=config.log.level,
+    format=config.log.format,
+)
+if sys.platform.startswith("win") or os.name == "nt":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+async def main(config: Config):
+    storage = RedisStorage(
+        redis=Redis(
+            host=config.redis.host,
+            port=config.redis.port,
+            db=config.redis.db,
+            password=config.redis.password,
+            username=config.redis.username,
+        )
+    )
+    db_pool: psycopg_pool.AsyncConnectionPool = await get_pg_pool(
+        db_name=config.db.name,
+        host=config.db.host,
+        port=config.db.port,
+        user=config.db.user,
+        password=config.db.password,
+    )
+    logger.info("Including middlewares...")
+    dp.update.middleware(DataBaseMiddleware())
+    dp.update.middleware(ActivityCounterMiddleware())
+
     # удаляем webhook, если он был установлен
     await bot.delete_webhook(drop_pending_updates=True)
     # запускаем polling
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot, db_pool=db_pool, admin_id=config.bot.admin_id)
+    except Exception as e:
+        logger.exception(e)
+    finally:
+        await db_pool.close()
+        logger.info("Connection to Postgres closed")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main(config=config))

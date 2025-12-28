@@ -1,10 +1,14 @@
 from aiogram import Bot, Dispatcher, Router
+import logging
+from config.config import Config
 
 # from config.config import load_config
 from handlers.handlers import register_handlers
 import os
 
+logger = logging.getLogger(__name__)
 # config = load_config()
+
 
 bot = Bot(token=os.getenv("BOT_TOKEN"))
 dp = Dispatcher()

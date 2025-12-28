@@ -4,8 +4,9 @@ from webhook.webhook import router as webhook_router
 from bot.bot import bot
 from config.url import WEBHOOK_URL
 from logger.logger import logger
+import logging
 
-logger.info("starting app")
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager

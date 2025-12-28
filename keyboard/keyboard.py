@@ -6,36 +6,22 @@ from datetime import datetime
 tomorrow_but = InlineKeyboardButton(text="tomorrow", callback_data="tomorrow")
 today_but = InlineKeyboardButton(text="today", callback_data="today")
 other_but = InlineKeyboardButton(text="other", callback_data="other")
-
-
-buttons = [
-    InlineKeyboardButton(text=f"{str(i)}:00", callback_data=str(i))
-    for i in range(1, 13)
-]
-buttons.append(other_but)
-builder = InlineKeyboardBuilder()
-builder.row(*buttons, width=3)
+back = InlineKeyboardButton(text="<", callback_data="<")
+forward = InlineKeyboardButton(text=">", callback_data=">")
+cancel = InlineKeyboardButton(text="cancel", callback_data="cancel")
 
 keyboard_markup = InlineKeyboardMarkup(
     inline_keyboard=[[tomorrow_but, today_but, other_but]]
 )
 
-days = [InlineKeyboardButton(text=str(i), callback_data=str(i)) for i in range(1, 32)]
-months = ["December", "January", "February"]
-months_kb = [
-    InlineKeyboardButton(text=months[i], callback_data=months[i].lower())
-    for i in range(len(months))
-]
-back = InlineKeyboardButton(text="<", callback_data="<")
-forward = InlineKeyboardButton(text=">", callback_data=">")
-
 
 class DateFactory(CallbackData, prefix="months"):
+    year_id: int
     month_id: int
     day_id: int
 
 
-months_ids = [i for i in range(1, 13)]
+months_ids = [i for i in range(0, 12)]
 months_names = [
     "January",
     "February",
@@ -52,25 +38,44 @@ months_names = [
 ]
 months_days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 
+regions = [
+    "Africa",
+    "America",
+    "Antarctica",
+    "Asia",
+    "Atlantic",
+    "Australia",
+    "Europe",
+    "Indian",
+    "Pacific",
+]
+##
+regions_kb_buttons = [
+    InlineKeyboardButton(text=regions[i], callback_data=regions[i].lower())
+    for i in range(len(regions))
+]
+region_kb_builder = InlineKeyboardBuilder()
+region_kb_builder.row(*regions_kb_buttons, width=3)
+region_kb_builder.row(cancel)
+
 
 def create_kb_month(month_id: int, year: int) -> InlineKeyboardBuilder:
     kb = []
-    
 
     kb_builder = InlineKeyboardBuilder()
-    days = months_days[month_id - 1]
-    month_button_text: str = months_names[month_id - 1] +' ' +str(year)
+    days = months_days[month_id]
+    month_button_text: str = months_names[month_id] + " " + str(year)
     month_button = InlineKeyboardButton(
-        text=month_button_text, callback_data=str(month_id - 1)
+        text=month_button_text, callback_data=str(month_id)
     )
-    back = InlineKeyboardButton(text="<", callback_data="<")
-    forward = InlineKeyboardButton(text=">", callback_data=">")
-    cancel = InlineKeyboardButton(text="cancel", callback_data="cancel")
+
     kb_builder.row(back, month_button, forward, width=3)
     for day in range(1, days + 1):
         button = InlineKeyboardButton(
             text=str(day),
-            callback_data=DateFactory(month_id=month_id, day_id=day).pack(),
+            callback_data=DateFactory(
+                year_id=year, month_id=month_id, day_id=day
+            ).pack(),
         )
         kb.append(button)
     kb_builder.row(*kb, width=7)
