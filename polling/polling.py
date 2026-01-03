@@ -1,6 +1,7 @@
+from bot.bot import create_dispatcher
 from config.config import Config, load_config
+from handlers.handlers import restore_tasks
 import asyncio
-from bot.bot import bot, dp
 import logging
 import os
 import sys
@@ -10,6 +11,8 @@ import psycopg_pool
 from aiogram.fsm.storage.redis import RedisStorage
 from middlewares.db_middlewares import DataBaseMiddleware
 from middlewares.activity_middleware import ActivityCounterMiddleware
+from aiogram import Bot, Dispatcher
+
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,8 @@ if sys.platform.startswith("win") or os.name == "nt":
 
 
 async def main(config: Config):
+    bot = Bot(token=os.getenv("BOT_TOKEN"))
+
     storage = RedisStorage(
         redis=Redis(
             host=config.redis.host,
@@ -33,6 +38,7 @@ async def main(config: Config):
             username=config.redis.username,
         )
     )
+    dp = create_dispatcher(storage=storage, bot=bot)
     db_pool: psycopg_pool.AsyncConnectionPool = await get_pg_pool(
         db_name=config.db.name,
         host=config.db.host,
@@ -40,6 +46,10 @@ async def main(config: Config):
         user=config.db.user,
         password=config.db.password,
     )
+    async with db_pool.connection() as conn:
+        await restore_tasks(bot=bot, conn=conn)
+        logger.debug("restore_tasks is running")
+
     logger.info("Including middlewares...")
     dp.update.middleware(DataBaseMiddleware())
     dp.update.middleware(ActivityCounterMiddleware())

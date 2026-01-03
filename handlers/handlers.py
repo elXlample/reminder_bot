@@ -1,5 +1,6 @@
 from aiogram import Router, F, Bot
 import asyncio
+import logging
 from sql.todo_actions import add_todo
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.types import Message, CallbackQuery
@@ -12,6 +13,10 @@ from keyboard.keyboard import (
     DateFactory,
     region_kb_builder,
     regions,
+    build_todo_keyboard,
+    TodoFactory,
+    TodoDeleteFactory,
+    PageButton,
 )
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, available_timezones
@@ -19,8 +24,76 @@ from config.config import load_config, Config
 from psycopg.connection_async import AsyncConnection
 from sql.actions import get_user, add_user, change_user_alive_status
 from sql.roles import UserRole
+from sql.todo_actions import (
+    get_todo_list,
+    get_all_todos,
+    change_todo_status,
+    remove_todo,
+    get_total_pages,
+)
+from aiogram.fsm.storage.redis import RedisStorage
+from redis.asyncio import Redis
+from logging import basicConfig
+from config.config import Config, load_config
 
-message_router = Router()
+
+async def schedule_reminder(bot, chat_id, todo, reminder_datetime):
+    try:
+        await asyncio.sleep(
+            (reminder_datetime - datetime.now(timezone.utc)).total_seconds()
+        )
+        await bot.send_message(chat_id, f"🔔 Reminder: {todo}")
+    except asyncio.CancelledError:
+        logger.info(f"Reminder cancelled for {chat_id}: {todo}")
+        raise
+
+
+scheduled_tasks: dict[tuple[int, str], asyncio.Task] = {}
+
+
+async def restore_tasks(
+    bot: Bot,
+    conn: AsyncConnection,
+):
+    todos = await get_all_todos(conn)
+    if todos:
+        mapped_todos = [
+            {
+                "user_id": user_id,
+                "todo": todo,
+                "reminder_time": reminder_time.isoformat() if reminder_time else None,
+                "done": done,
+                "timezone": timezone if timezone else "Europe/Moscow",
+            }
+            for user_id, todo, reminder_time, done, timezone in todos
+        ]
+    else:
+        logger.info("no reminders now")
+    for todo in mapped_todos:
+        user_id = todo["user_id"]
+        reminder_time = todo["reminder_time"]
+        todo = todo["todo"]
+        task = asyncio.create_task(
+            schedule_reminder(
+                bot=bot,
+                chat_id=user_id,
+                todo=todo,
+                reminder_datetime=datetime.fromisoformat(reminder_time),
+            )
+        )
+        logger.info(f"task :{todo} created")
+        scheduled_tasks[(user_id, todo)] = task
+
+
+config: Config = load_config()
+logging.basicConfig(
+    level=config.log.level,
+    format=config.log.format,
+)
+
+
+logger = logging.getLogger(__name__)
+
 regions = [region.lower() for region in regions]
 defaut_timezone = "Europe/Moscow"
 
@@ -43,14 +116,21 @@ def available_timezone(region: str, city: str):
 
 def register_handlers(message_router: Router, bot: Bot):
     async def schedule_reminder(bot, chat_id, todo, reminder_datetime):
-        now = datetime.now(timezone.utc)
-        delay = (reminder_datetime - now).total_seconds()
-        if delay > 0:
-            await asyncio.sleep(delay)
-        await bot.send_message(chat_id, f"Don't forget to {todo}!")
+        try:
+            await asyncio.sleep(
+                (reminder_datetime - datetime.now(timezone.utc)).total_seconds()
+            )
+            await bot.send_message(chat_id, f"🔔 Reminder: {todo}")
+        except asyncio.CancelledError:
+            logger.info(f"Reminder cancelled for {chat_id}: {todo}")
+            raise
 
     @message_router.message(CommandStart(), StateFilter(default_state))
-    async def command_start(message: Message, conn: AsyncConnection, bot: Bot):
+    async def command_start(
+        message: Message, conn: AsyncConnection, bot: Bot, state: FSMContext
+    ):
+        page = 1
+        await state.update_data(page=page)
         user_row = await get_user(conn, user_id=message.from_user.id)
         if user_row is None:
             await add_user(
@@ -68,6 +148,244 @@ def register_handlers(message_router: Router, bot: Bot):
         await message.answer(
             "Hello! I am the ReminderBot! To get proper reminders, please, select your timezone using /timezone (In case of being in Moscow timezone do nothing)"
         )
+
+    @message_router.message(Command(commands="todos"), StateFilter(default_state))
+    async def check_todos(message: Message, state: FSMContext, conn: AsyncConnection):
+        todos = await get_todo_list(conn=conn, user_id=message.from_user.id)
+
+        all = True
+
+        await state.update_data(all=all)
+        if todos:
+            mapped_todos = [
+                {
+                    "todo": todo,
+                    "reminder_time": reminder_time.isoformat()
+                    if reminder_time
+                    else None,
+                    "done": done,
+                    "timezone": timezone,
+                }
+                for todo, reminder_time, done, timezone in todos
+            ]
+
+            await state.update_data(todos=mapped_todos)
+            data = await state.get_data()
+            page = data.get("page")
+            await message.answer(
+                "all your active reminders:",
+                reply_markup=build_todo_keyboard(
+                    todos=mapped_todos,
+                    show_all=True,
+                    user_id=message.from_user.id,
+                    conn=conn,
+                    page=page,
+                ).as_markup(),
+            )
+
+        else:
+            await message.answer(text="User has no todos. To add use /remind")
+
+    @message_router.callback_query(PageButton.filter())
+    async def page_up(
+        callback: CallbackQuery, page: int, conn: AsyncConnection, state: FSMContext
+    ):
+        user_id = callback.from_user.id
+        data = await state.get_data()
+        page = data.get("page")
+        total_pages = await get_total_pages(conn=conn, user_id=user_id)
+        if total_pages == 1:
+            logger.info("total pages == 1")
+            await callback.answer()
+
+        else:
+            if page + 1 <= total_pages:
+                todos = await get_todo_list(conn=conn, user_id=user_id, page=page + 1)
+                if todos:
+                    mapped_todos = [
+                        {
+                            "todo": todo,
+                            "reminder_time": reminder_time.isoformat()
+                            if reminder_time
+                            else None,
+                            "done": done,
+                            "timezone": timezone,
+                        }
+                        for todo, reminder_time, done, timezone in todos
+                    ]
+                    all = data.get("all")
+                    await callback.message.edit_text(
+                        text=f"page:{page + 1} reminder:",
+                        reply_markup=build_todo_keyboard(
+                            todos=mapped_todos,
+                            show_all=all,
+                            user_id=user_id,
+                            conn=conn,
+                            page=page + 1,
+                        ),
+                    )
+                    await state.update_data(page=page + 1)
+            else:
+                logger.info("on final page")
+                await callback.answer()
+
+    @message_router.callback_query(F.data == "show_only_active")
+    async def show_only_active_func(
+        callback: CallbackQuery, state: FSMContext, conn: AsyncConnection
+    ):
+        data = await state.get_data()
+        todos = data.get("todos")
+        all = False
+        await state.update_data(all=all)
+        page = data.get("page")  # crutch
+        await callback.message.edit_text(
+            text="active reminders:",
+            reply_markup=build_todo_keyboard(
+                todos=todos,
+                show_all=False,
+                user_id=callback.from_user.id,
+                conn=conn,
+                page=page,
+            ).as_markup(),
+        )
+
+    @message_router.callback_query(F.data == "show_all")
+    async def show_all_func(
+        callback: CallbackQuery, state: FSMContext, conn: AsyncConnection
+    ):
+        data = await state.get_data()
+        todos = data.get("todos")
+        all = True
+        await state.update_data(all=all)
+        page = data.get("page")
+        await callback.message.edit_text(
+            text="all reminders:",
+            reply_markup=build_todo_keyboard(
+                todos=todos,
+                show_all=True,
+                user_id=callback.from_user.id,
+                conn=conn,
+                page=page,
+            ).as_markup(),
+        )
+
+    @message_router.callback_query(TodoFactory.filter())
+    async def done_button_pressed(
+        callback: CallbackQuery, conn: AsyncConnection, state: FSMContext
+    ):
+        boolean = None
+        user_id = callback.from_user.id
+        data = await state.get_data()
+        todos = data.get("todos")
+        all = data.get("all")
+
+        text = callback.data
+        todo = str(callback.data.split(":")[1])
+
+        if "True" in str(text):
+            boolean = False
+
+        elif "False" in str(text):
+            boolean = True
+
+        await change_todo_status(conn=conn, boolean=boolean, user_id=user_id, todo=todo)
+        # new todos
+        get_todos = await get_todo_list(conn=conn, user_id=callback.from_user.id)
+        if get_todos:
+            mapped_todos = [
+                {
+                    "todo": todo,
+                    "reminder_time": reminder_time.isoformat()
+                    if reminder_time
+                    else None,
+                    "done": done,
+                    "timezone": timezone,
+                }
+                for todo, reminder_time, done, timezone in get_todos
+            ]
+
+            await state.update_data(todos=mapped_todos)
+        else:
+            await callback.message.edit_text(
+                text=f"User with id {user_id} currently has no todos. To create one, use /remind "
+            )
+
+        data = await state.get_data()
+        todos = data.get("todos")
+        page = data.get("page")
+
+        task = scheduled_tasks.pop((user_id, todo), None)
+        if task:
+            task.cancel()
+            logger.info(f"task: {todo} cancelled")
+        else:
+            logger.info(f"task: {todo} does not exist")
+
+        await callback.message.edit_text(
+            text="all reminders",
+            reply_markup=build_todo_keyboard(
+                todos=todos,
+                show_all=all,
+                user_id=callback.from_user.id,
+                conn=conn,
+                page=page,
+            ).as_markup(),
+        )
+
+    @message_router.callback_query(TodoDeleteFactory.filter())
+    async def delete_button_pressed(
+        callback: CallbackQuery, conn: AsyncConnection, state: FSMContext
+    ):
+        user_id = callback.from_user.id
+        data = await state.get_data()
+
+        all = data.get("all")
+
+        text = callback.data
+        todo = str(text.split(":")[1])
+
+        await remove_todo(conn=conn, user_id=user_id, todo=todo)
+        # new todos
+
+        get_todos = await get_todo_list(conn=conn, user_id=callback.from_user.id)
+        if len(get_todos) > 0:
+            mapped_todos = [
+                {
+                    "todo": todo,
+                    "reminder_time": reminder_time.isoformat()
+                    if reminder_time
+                    else None,
+                    "done": done,
+                    "timezone": timezone,
+                }
+                for todo, reminder_time, done, timezone in get_todos
+            ]
+            await state.update_data(todos=mapped_todos)
+        else:
+            await callback.message.edit_text(
+                text=f"User with id {user_id} currently has no todos. To create one, use /remind "
+            )
+            await state.update_data(todos=[])
+
+        data = await state.get_data()
+        todos = data.get("todos")
+        page = data.get("page")  # crutch
+        await callback.message.edit_text(
+            text="all reminders",
+            reply_markup=build_todo_keyboard(
+                todos=todos,
+                show_all=all,
+                user_id=callback.from_user.id,
+                conn=conn,
+                page=page,
+            ).as_markup(),
+        )
+        task = scheduled_tasks.pop((user_id, todo), None)
+        if task:
+            task.cancel()
+            logger.info(f"task: {todo} cancelled")
+        else:
+            logger.info(f"task: {todo} does not exist")
 
     @message_router.message(Command(commands="timezone"), StateFilter(default_state))
     async def pick_timezone(message: Message, state: FSMContext):
@@ -282,12 +600,9 @@ def register_handlers(message_router: Router, bot: Bot):
         minutes = time[3:]
         await state.update_data(hour=hour, minutes=minutes)
         data = await state.get_data()
-        month = data.get("month")
+        month = data.get("current_month")
         day = data.get("day")
-        year = data.get("year")
-        if int(day) < 10:
-            day = "0" + str(day)
-
+        year = data.get("current_year")
         hour = data.get("hour")
         minutes = data.get("minutes")
         todo = data.get("todo")
@@ -297,11 +612,11 @@ def register_handlers(message_router: Router, bot: Bot):
         region = data.get("region")
         country = data.get("country")
         if not region:
-            timezone = defaut_timezone
+            user_timezone = defaut_timezone
         else:
-            timezone = f"{region}/{country}"
+            user_timezone = f"{region}/{country}"
 
-        reminder_datetime = reminder_datetime.replace(tzinfo=ZoneInfo(timezone))
+        reminder_datetime = reminder_datetime.replace(tzinfo=ZoneInfo(user_timezone))
 
         done = False
         if reminder_datetime.astimezone(timezone.utc) < datetime.now(
@@ -316,12 +631,14 @@ def register_handlers(message_router: Router, bot: Bot):
             todo=todo,
             done=done,
             reminder_time=reminder_datetime.astimezone(timezone.utc),
+            user_timezone=user_timezone,
         )
 
         await message.answer(
             f"Will remind you to {todo} at {reminder_datetime.strftime('%Y-%m-%d %H:%M')}"
         )
-        asyncio.create_task(
+
+        task = asyncio.create_task(
             schedule_reminder(
                 bot=bot,
                 chat_id=message.from_user.id,
@@ -329,6 +646,11 @@ def register_handlers(message_router: Router, bot: Bot):
                 reminder_datetime=reminder_datetime.astimezone(timezone.utc),
             )
         )
+        if task not in scheduled_tasks:
+            scheduled_tasks[(message.from_user.id, todo)] = task
+        else:
+            logger.info("this task already exist")
+
         await state.clear()
 
     @message_router.message(
