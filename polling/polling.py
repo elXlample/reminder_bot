@@ -1,4 +1,5 @@
 from bot.bot import create_dispatcher
+from locales.cmd import commands_ru, commands_en, commands_set_ru, commands_set_en
 from config.config import Config, load_config
 from handlers.handlers import restore_tasks
 import asyncio
@@ -12,6 +13,9 @@ from aiogram.fsm.storage.redis import RedisStorage
 from middlewares.db_middlewares import DataBaseMiddleware
 from middlewares.activity_middleware import ActivityCounterMiddleware
 from aiogram import Bot, Dispatcher
+from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 
 
 logger = logging.getLogger(__name__)
@@ -26,8 +30,29 @@ if sys.platform.startswith("win") or os.name == "nt":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
+async def set_main_menu_commands(bot: Bot, lang: str | None):
+    if lang == "ru":
+        main_menu_commands = [
+            BotCommand(command=command, description=description)
+            for command, description in commands_set_ru.items()
+        ]
+    elif lang == "en":
+        main_menu_commands = [
+            BotCommand(command=command, description=description)
+            for command, description in commands_set_en.items()
+        ]
+    await bot.set_my_commands(
+        commands=main_menu_commands, scope=BotCommandScopeAllPrivateChats()
+    )
+
+
 async def main(config: Config):
-    bot = Bot(token=os.getenv("BOT_TOKEN"))
+    bot = Bot(
+        token=os.getenv("BOT_TOKEN"),
+    )
+    await set_main_menu_commands(bot=bot, lang="ru")
+    commands = await bot.get_my_commands()
+    print(commands)
 
     storage = RedisStorage(
         redis=Redis(

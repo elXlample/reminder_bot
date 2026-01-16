@@ -60,8 +60,18 @@ async def get_todo_list(
     conn: AsyncConnection, *, user_id: int, page: int
 ) -> list[tuple[Any, ...]] | None:
     async with conn.cursor() as cursor:
-        page_size = 10
+        page = max(page, 1)
+
+        total_rows = await cursor.execute(
+            "SELECT COUNT(*) FROM todos WHERE user_id = %s", params=(user_id,)
+        )
+        total_rows = (await total_rows.fetchone())[0]
+        page_size = 5
         offset = (page - 1) * page_size
+        if offset >= total_rows:
+            return []
+        limit = min(page_size, total_rows - offset)
+
         data = await cursor.execute(
             query="""
                 SELECT todo, reminder_time,done,timezone
@@ -70,12 +80,12 @@ async def get_todo_list(
                 ORDER BY reminder_time
                 LIMIT %s OFFSET %s
             """,
-            params=(user_id, page_size, offset),
+            params=(user_id, limit, offset),
         )
 
         row = await data.fetchall()
     logger.info("Row is %s", row)
-    return row if row else None
+    return row if row else []
 
 
 async def get_total_pages(conn: AsyncConnection, *, user_id: int) -> int | None:

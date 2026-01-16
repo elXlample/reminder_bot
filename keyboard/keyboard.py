@@ -18,9 +18,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-tomorrow_but = InlineKeyboardButton(text="tomorrow", callback_data="tomorrow")
-today_but = InlineKeyboardButton(text="today", callback_data="today")
-other_but = InlineKeyboardButton(text="other", callback_data="other")
+tomorrow_but = InlineKeyboardButton(text="Завтра", callback_data="tomorrow")
+today_but = InlineKeyboardButton(text="Сегодня", callback_data="today")
+other_but = InlineKeyboardButton(text="Другая дата", callback_data="other")
 
 
 keyboard_markup = InlineKeyboardMarkup(
@@ -46,30 +46,28 @@ class DateFactory(CallbackData, prefix="months"):
 
 
 class PageButton(CallbackData, prefix="pages"):
-    page_up: bool | None
-    page_down: bool | None
+    page_up: int | None
+    page_down: int | None
     from_page: int | None
 
 
-back = InlineKeyboardButton(text="<", callback_data=PageButton(page_down=True))
-forward = InlineKeyboardButton(text=">", callback_data=PageButton(page_up=True))
-cancel = InlineKeyboardButton(text="cancel", callback_data="cancel")
+cancel = InlineKeyboardButton(text="Отмена", callback_data="cancel")
 
 
 months_ids = [i for i in range(0, 12)]
 months_names = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
+    "Январь",
+    "Февраль",
+    "Март",
+    "Апрель",
+    "Май",
+    "Июнь",
+    "Июль",
+    "Август",
+    "Сентябрь",
+    "Октябрь",
+    "Ноябрь",
+    "Декабрь",
 ]
 months_days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 
@@ -84,9 +82,20 @@ regions = [
     "Indian",
     "Pacific",
 ]
+regions_ru = [
+    "Африка",
+    "Америка",
+    "Антарктика",
+    "Азия",
+    "Атлантика",
+    "Австралия",
+    "Европа",
+    "Индия",
+    "Тихий Океан",
+]
 ##
 regions_kb_buttons = [
-    InlineKeyboardButton(text=regions[i], callback_data=regions[i].lower())
+    InlineKeyboardButton(text=regions_ru[i], callback_data=regions[i].lower())
     for i in range(len(regions))
 ]
 region_kb_builder = InlineKeyboardBuilder()
@@ -103,6 +112,8 @@ def create_kb_month(month_id: int, year: int) -> InlineKeyboardBuilder:
     month_button = InlineKeyboardButton(
         text=month_button_text, callback_data=str(month_id)
     )
+    back = InlineKeyboardButton(text="<", callback_data="<")
+    forward = InlineKeyboardButton(text=">", callback_data=">")
 
     kb_builder.row(back, month_button, forward, width=3)
     for day in range(1, days + 1):
@@ -118,19 +129,37 @@ def create_kb_month(month_id: int, year: int) -> InlineKeyboardBuilder:
     return kb_builder
 
 
-async def build_todo_keyboard(
-    todos: list, show_all: bool, user_id: int, conn: AsyncConnection, page: int
+def build_todo_keyboard(
+    todos: list,
+    show_all: bool,
+    user_id: int,
+    conn: AsyncConnection,
+    page: int | None,
+    total_pages: int,
 ) -> InlineKeyboardBuilder:
     kb_builder = InlineKeyboardBuilder()
-    total_pages = await get_total_pages(conn=conn, user_id=user_id)
-    page = InlineKeyboardButton(
-        text=f"page {page}/{total_pages}", callback_data=f"{page}"
+    back = InlineKeyboardButton(
+        text="<",
+        callback_data=PageButton(page_down=1, page_up=0, from_page=page).pack(),
     )
-    kb_builder.row(back, page, forward, width=3)
+    forward = InlineKeyboardButton(
+        text=">",
+        callback_data=PageButton(page_up=1, page_down=0, from_page=page).pack(),
+    )
+    if not page:
+        page = 1
+
+    page_button = InlineKeyboardButton(
+        text=f"Страница {page}/{total_pages}", callback_data=f"{page}"
+    )
+
+    kb_builder.row(back, page_button, forward, width=3)
     show_only_active = InlineKeyboardButton(
-        text="show only active", callback_data="show_only_active"
+        text="Показать только активные", callback_data="show_only_active"
     )
-    show_all_button = InlineKeyboardButton(text="show all", callback_data="show_all")
+    show_all_button = InlineKeyboardButton(
+        text="Показать все", callback_data="show_all"
+    )
     if show_all:
         kb_builder.row(show_only_active)
     else:
@@ -151,12 +180,7 @@ async def build_todo_keyboard(
         reminder_datetime_text = reminder_datetime.strftime("%Y-%m-%d %H-%M")
 
         action = InlineKeyboardButton(
-            text=f"{todo} at {reminder_datetime_text}",
-            callback_data=TodoFactory(
-                todo_name=todo.lower(),
-                todo_time=reminder_datetime_text,
-                todo_done=str(done),
-            ).pack(),
+            text=f"{todo} {reminder_datetime_text[5:]}", callback_data=todo
         )
         done_button = InlineKeyboardButton(
             text=done_symbol,
@@ -184,3 +208,18 @@ async def build_todo_keyboard(
             kb_builder.row(action, done_button, delete_button)
     kb_builder.row(cancel)
     return kb_builder
+
+
+def build_activity_kb(stats: list) -> InlineKeyboardBuilder:
+    kb_builder_activity = InlineKeyboardBuilder()
+    buttons = []
+    for stat in stats:
+        user_id = stat[0]
+        activity = stat[1]
+        button = InlineKeyboardButton(
+            text=f"{user_id}: {activity} действий",
+            callback_data=f"{user_id}:{activity}",
+        )
+        buttons.append(button)
+    kb_builder_activity.row(*buttons)
+    return kb_builder_activity

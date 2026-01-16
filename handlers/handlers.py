@@ -1,4 +1,5 @@
 from aiogram import Router, F, Bot
+from locales.cmd import commands_en, commands_ru
 import asyncio
 import logging
 from sql.todo_actions import add_todo
@@ -14,6 +15,7 @@ from keyboard.keyboard import (
     region_kb_builder,
     regions,
     build_todo_keyboard,
+    build_activity_kb,
     TodoFactory,
     TodoDeleteFactory,
     PageButton,
@@ -35,6 +37,8 @@ from aiogram.fsm.storage.redis import RedisStorage
 from redis.asyncio import Redis
 from logging import basicConfig
 from config.config import Config, load_config
+from aiogram.enums import ParseMode
+from sql.actions import get_statistics
 
 
 async def schedule_reminder(bot, chat_id, todo, reminder_datetime):
@@ -73,14 +77,21 @@ async def restore_tasks(
         user_id = todo["user_id"]
         reminder_time = todo["reminder_time"]
         todo = todo["todo"]
-        task = asyncio.create_task(
-            schedule_reminder(
-                bot=bot,
-                chat_id=user_id,
-                todo=todo,
-                reminder_datetime=datetime.fromisoformat(reminder_time),
+        if datetime.fromisoformat(reminder_time) < datetime.now().astimezone(
+            timezone.utc
+        ):
+            logger.info(f"{todo} expired")
+            continue
+        else:
+            task = asyncio.create_task(
+                schedule_reminder(
+                    bot=bot,
+                    chat_id=user_id,
+                    todo=todo,
+                    reminder_datetime=datetime.fromisoformat(reminder_time),
+                )
             )
-        )
+
         logger.info(f"task :{todo} created")
         scheduled_tasks[(user_id, todo)] = task
 
@@ -146,12 +157,37 @@ def register_handlers(message_router: Router, bot: Bot):
             )
 
         await message.answer(
-            "Hello! I am the ReminderBot! To get proper reminders, please, select your timezone using /timezone (In case of being in Moscow timezone do nothing)"
+            text=commands_ru["start"], parse_mode=ParseMode.MARKDOWN_V2
         )
 
-    @message_router.message(Command(commands="todos"), StateFilter(default_state))
+    @message_router.message(Command(commands="help"))
+    async def help_user(message: Message, state: FSMContext):
+        await message.answer(
+            text=commands_ru["help"],
+        )
+
+    @message_router.message(Command(commands="activity"))
+    async def show_activity(message: Message, conn: AsyncConnection):
+        stats = await get_statistics(conn=conn, user_id=message.from_user.id)
+        builder = build_activity_kb(stats=stats)
+        await message.answer(
+            text=commands_ru["activity"],
+            reply_markup=builder.as_markup(),
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+
+    @message_router.message(Command(commands="list"), StateFilter(default_state))
     async def check_todos(message: Message, state: FSMContext, conn: AsyncConnection):
-        todos = await get_todo_list(conn=conn, user_id=message.from_user.id)
+        # total_pages = await get_total_pages(conn=conn, user_id=message.from_user.id)
+        data = await state.get_data()
+        present_page = data.get("page")
+        if present_page:
+            page = present_page
+        else:
+            page = 1
+        todos = await get_todo_list(conn=conn, user_id=message.from_user.id, page=page)
+        total_pages = await get_total_pages(conn=conn, user_id=message.from_user.id)
+        await state.update_data(total_pages=total_pages)
 
         all = True
 
@@ -172,33 +208,37 @@ def register_handlers(message_router: Router, bot: Bot):
             await state.update_data(todos=mapped_todos)
             data = await state.get_data()
             page = data.get("page")
+            total_pages = data.get("total_pages")
             await message.answer(
-                "all your active reminders:",
+                text="Все активные напоминания:",
                 reply_markup=build_todo_keyboard(
                     todos=mapped_todos,
                     show_all=True,
                     user_id=message.from_user.id,
                     conn=conn,
                     page=page,
+                    total_pages=total_pages,
                 ).as_markup(),
             )
 
         else:
-            await message.answer(text="User has no todos. To add use /remind")
+            await message.answer(text=commands_ru["no_todos"])
 
     @message_router.callback_query(PageButton.filter())
     async def page_up(
-        callback: CallbackQuery, page: int, conn: AsyncConnection, state: FSMContext
+        callback: CallbackQuery,
+        conn: AsyncConnection,
+        state: FSMContext,
+        callback_data: PageButton,
     ):
         user_id = callback.from_user.id
         data = await state.get_data()
-        page = data.get("page")
-        total_pages = await get_total_pages(conn=conn, user_id=user_id)
+        page = data.get("page", 1)
+        total_pages = data.get("total_pages")
         if total_pages == 1:
             logger.info("total pages == 1")
             await callback.answer()
-
-        else:
+        if callback_data.page_up == 1:
             if page + 1 <= total_pages:
                 todos = await get_todo_list(conn=conn, user_id=user_id, page=page + 1)
                 if todos:
@@ -222,12 +262,48 @@ def register_handlers(message_router: Router, bot: Bot):
                             user_id=user_id,
                             conn=conn,
                             page=page + 1,
-                        ),
+                            total_pages=total_pages,
+                        ).as_markup(),
                     )
                     await state.update_data(page=page + 1)
             else:
                 logger.info("on final page")
                 await callback.answer()
+        elif callback_data.page_down == 1:
+            if page - 1 >= 1:
+                todos = await get_todo_list(conn=conn, user_id=user_id, page=page - 1)
+                if todos:
+                    mapped_todos = [
+                        {
+                            "todo": todo,
+                            "reminder_time": reminder_time.isoformat()
+                            if reminder_time
+                            else None,
+                            "done": done,
+                            "timezone": timezone,
+                        }
+                        for todo, reminder_time, done, timezone in todos
+                    ]
+                    all = data.get("all")
+                    await callback.message.edit_text(
+                        text=f"page:{page - 1} reminder:",
+                        reply_markup=build_todo_keyboard(
+                            todos=mapped_todos,
+                            show_all=all,
+                            user_id=user_id,
+                            conn=conn,
+                            page=page - 1,
+                            total_pages=total_pages,
+                        ).as_markup(),
+                    )
+                    await state.update_data(page=page - 1)
+            else:
+                logger.info("on first page")
+                await callback.answer()
+
+    @message_router.callback_query(F.data == "cancel", StateFilter(None))
+    async def cancel_show_todos(callback: CallbackQuery):
+        await callback.message.edit_text(text=commands_ru["cancel_check_todo"])
 
     @message_router.callback_query(F.data == "show_only_active")
     async def show_only_active_func(
@@ -237,15 +313,17 @@ def register_handlers(message_router: Router, bot: Bot):
         todos = data.get("todos")
         all = False
         await state.update_data(all=all)
-        page = data.get("page")  # crutch
+        page = data.get("page")
+        total_pages = data.get("total_pages")  # crutch
         await callback.message.edit_text(
-            text="active reminders:",
+            text="Активные напоминания:",
             reply_markup=build_todo_keyboard(
                 todos=todos,
                 show_all=False,
                 user_id=callback.from_user.id,
                 conn=conn,
                 page=page,
+                total_pages=total_pages,
             ).as_markup(),
         )
 
@@ -258,14 +336,16 @@ def register_handlers(message_router: Router, bot: Bot):
         all = True
         await state.update_data(all=all)
         page = data.get("page")
+        total_pages = data.get("total_pages")
         await callback.message.edit_text(
-            text="all reminders:",
+            text="Все напоминания:",
             reply_markup=build_todo_keyboard(
                 todos=todos,
                 show_all=True,
                 user_id=callback.from_user.id,
                 conn=conn,
                 page=page,
+                total_pages=total_pages,
             ).as_markup(),
         )
 
@@ -290,7 +370,13 @@ def register_handlers(message_router: Router, bot: Bot):
 
         await change_todo_status(conn=conn, boolean=boolean, user_id=user_id, todo=todo)
         # new todos
-        get_todos = await get_todo_list(conn=conn, user_id=callback.from_user.id)
+        page = data.get("page")
+        if not page:
+            page = 1
+
+        get_todos = await get_todo_list(
+            conn=conn, user_id=callback.from_user.id, page=page
+        )
         if get_todos:
             mapped_todos = [
                 {
@@ -306,13 +392,13 @@ def register_handlers(message_router: Router, bot: Bot):
 
             await state.update_data(todos=mapped_todos)
         else:
-            await callback.message.edit_text(
-                text=f"User with id {user_id} currently has no todos. To create one, use /remind "
-            )
+            await callback.message.edit_text(text=commands_ru["no_todos"])
 
         data = await state.get_data()
         todos = data.get("todos")
         page = data.get("page")
+        total_pages = await get_total_pages(conn=conn, user_id=user_id)
+        await state.update_data(total_pages=total_pages)
 
         task = scheduled_tasks.pop((user_id, todo), None)
         if task:
@@ -329,6 +415,7 @@ def register_handlers(message_router: Router, bot: Bot):
                 user_id=callback.from_user.id,
                 conn=conn,
                 page=page,
+                total_pages=total_pages,
             ).as_markup(),
         )
 
@@ -345,9 +432,14 @@ def register_handlers(message_router: Router, bot: Bot):
         todo = str(text.split(":")[1])
 
         await remove_todo(conn=conn, user_id=user_id, todo=todo)
+        page = data.get("page")
+        if not page:
+            page = 1
         # new todos
 
-        get_todos = await get_todo_list(conn=conn, user_id=callback.from_user.id)
+        get_todos = await get_todo_list(
+            conn=conn, user_id=callback.from_user.id, page=page
+        )
         if len(get_todos) > 0:
             mapped_todos = [
                 {
@@ -362,22 +454,23 @@ def register_handlers(message_router: Router, bot: Bot):
             ]
             await state.update_data(todos=mapped_todos)
         else:
-            await callback.message.edit_text(
-                text=f"User with id {user_id} currently has no todos. To create one, use /remind "
-            )
+            await callback.message.edit_text(text=commands_ru["no_todos"])
             await state.update_data(todos=[])
 
         data = await state.get_data()
         todos = data.get("todos")
-        page = data.get("page")  # crutch
+        page = data.get("page")
+        total_pages = await get_total_pages(conn=conn, user_id=user_id)
+        await state.update_data(total_pages=total_pages)  # crutch
         await callback.message.edit_text(
-            text="all reminders",
+            text="Все напоминания:",
             reply_markup=build_todo_keyboard(
                 todos=todos,
                 show_all=all,
                 user_id=callback.from_user.id,
                 conn=conn,
                 page=page,
+                total_pages=total_pages,
             ).as_markup(),
         )
         task = scheduled_tasks.pop((user_id, todo), None)
@@ -387,10 +480,11 @@ def register_handlers(message_router: Router, bot: Bot):
         else:
             logger.info(f"task: {todo} does not exist")
 
-    @message_router.message(Command(commands="timezone"), StateFilter(default_state))
+    @message_router.message(Command(commands="time"), StateFilter(None))
     async def pick_timezone(message: Message, state: FSMContext):
         await message.answer(
-            "To add your timezone, pick your region:",
+            commands_ru["pick_region"],
+            parse_mode=ParseMode.MARKDOWN_V2,
             reply_markup=region_kb_builder.as_markup(),
         )
         await state.set_state(DatePicker.pick_timezone)
@@ -402,23 +496,27 @@ def register_handlers(message_router: Router, bot: Bot):
         await state.set_state(DatePicker.pick_country)
         region = callback.data.capitalize()
         await state.update_data(region=region)
-        await callback.message.edit_text(
-            "Now please write down your country: (e.g. Moscow)"
-        )
+        await callback.message.edit_text(commands_ru["write_country"])
 
     @message_router.callback_query(
         StateFilter(DatePicker.pick_timezone), F.data == "cancel"
     )
     async def cancel_timezone(callback: CallbackQuery, state: FSMContext):
-        await state.set_state(default_state)
-        await callback.message.edit_text(
-            "Region setting cancelled. To see all the commands use /help"
-        )
+        await state.set_state(None)
+        await callback.message.edit_text(commands_ru["cancel_pick_timezone"])
+
+    @message_router.message(
+        Command(commands="cancel"),
+        StateFilter(DatePicker.pick_timezone),
+    )
+    async def cancel_timezone_command(message: Message, state: FSMContext):
+        await state.set_state(None)
+        await message.answer(commands_ru["cancel_pick_timezone"])
 
     @message_router.message(StateFilter(DatePicker.pick_timezone))
     async def wrong_timezone(message: Message):
         await message.answer(
-            "Please, select your region using inline keyboard or use /cancel",
+            "Пожалуйста, выберите ваш регион с помощью встроенной клавиатуры или используйте команду /cancel",
             reply_markup=region_kb_builder.as_markup(),
         )
 
@@ -430,28 +528,29 @@ def register_handlers(message_router: Router, bot: Bot):
         data = await state.get_data()
         region = data["region"]
         if available_timezone(region=region, city=country):
+            await state.set_state(None)
             await state.update_data(country=country)
-            await message.answer(f"Timezone {region}/{country} set succesfully!")
-            await state.set_state(default_state)
+            await message.answer(f"Параметры {region}/{country} успешно установлены!")
+
         else:
             await message.answer(
-                f"Unfortunately there is no avaliable timezone({region}/{country}). \n Please select a different country or write /cancel"
+                f"К сожалению для ({region}/{country}) нет настроек часового пояса в базе данных. \n Пожалуйста, напишите другой город или используйте команду /cancel"
             )
 
     @message_router.message(
         Command(commands="cancel"), StateFilter(DatePicker.pick_country)
     )
     async def cancel_country(message: Message, state: FSMContext):
-        await state.set_state(default_state)
-        await message.answer(
-            "Coutry picking cancelled. To see all avialiable features use /help"
-        )
+        await state.set_state(None)
+        await message.answer(commands_ru["pick_country_cancel"])
 
     @message_router.message(StateFilter(DatePicker.pick_country))
     async def wrong_country(message: Message):
-        await message.answer("Please, enter a valid country name!")
+        await message.answer(
+            "Пожалуйста, напишите корректное название города (на английском языке)"
+        )
 
-    @message_router.message(Command(commands="remind"), StateFilter(default_state))
+    @message_router.message(Command(commands="r"), StateFilter(default_state))
     async def remind_message(
         message: Message, command: CommandObject, state: FSMContext
     ):
@@ -460,17 +559,15 @@ def register_handlers(message_router: Router, bot: Bot):
         if text:
             await state.update_data(todo=text)
 
-            await message.answer(
-                text="Now please pick a date:", reply_markup=keyboard_markup
-            )
+            await message.answer(text="Выберите дату:", reply_markup=keyboard_markup)
             await state.set_state(DatePicker.pick_date)
         else:
-            await message.answer("task can not be empty!")
+            await message.answer("Напоминание не может быть пустым!")
 
     @message_router.message(Command(commands="cancel"), ~StateFilter(default_state))
     async def cancel_reminder(message: Message, state: FSMContext):
-        await state.clear()
-        await message.answer("Reminder cancelled! To make another reminder use /remind")
+        await state.set_state(None)
+        await message.answer(text=commands_ru["cancel_r"])
 
     @message_router.callback_query(
         StateFilter(DatePicker.pick_date), F.data.in_(["tomorrow", "today"])
@@ -485,9 +582,7 @@ def register_handlers(message_router: Router, bot: Bot):
             )
         elif callback.data == "today":
             await state.update_data(current_year=year, current_month=month, day=day)
-        await callback.message.edit_text(
-            text="now please write down time(format 14:00)"
-        )
+        await callback.message.edit_text(text="Теперь напишите время \n(Формат: 14:29)")
         await state.set_state(DatePicker.pick_time)
 
     @message_router.callback_query(
@@ -513,7 +608,7 @@ def register_handlers(message_router: Router, bot: Bot):
     @message_router.message(StateFilter(DatePicker.pick_date))
     async def wrong_content_date(message: Message):
         await message.reply(
-            "Please, use an inline keyboard to pick a date or use cancel button"
+            "Пожалуйста, используйте встроенную клавиатуру для выбора даты или используйте команду /cancel"
         )
 
     @message_router.callback_query(StateFilter(DatePicker.pick_date), F.data == ">")
@@ -564,9 +659,9 @@ def register_handlers(message_router: Router, bot: Bot):
         StateFilter(DatePicker.pick_date), F.data == "cancel"
     )
     async def cancel_data_pick(callback: CallbackQuery, state: FSMContext):
-        await state.set_state(default_state)
+        await state.set_state(None)
         await callback.message.edit_text(
-            text="Data pick cancelled. To add new reminder use /remind"
+            text="Выбор даты отменен. Чтобы создать напоминание, используйте команду /r"
         )
         await state.clear()
 
@@ -582,7 +677,7 @@ def register_handlers(message_router: Router, bot: Bot):
         day = str(callback_data.day_id)
         await state.update_data(year=year, month=month, day=day)
 
-        await callback.message.answer(text="now please write down time(format 14:00)")
+        await callback.message.answer(text="Теперь напишите время \n(Формат: 14:29)")
 
     @message_router.message(
         StateFilter(DatePicker.pick_time),
@@ -592,6 +687,10 @@ def register_handlers(message_router: Router, bot: Bot):
             and message.text[2] == ":"
             and message.text[:2].isdigit()
             and message.text[3:].isdigit()
+        ),
+        lambda message: (
+            int(message.text[:2]) in range(0, 25)
+            and int(message.text[3:]) in range(0, 25)
         ),
     )
     async def normal_time(message: Message, state: FSMContext, conn: AsyncConnection):
@@ -634,9 +733,9 @@ def register_handlers(message_router: Router, bot: Bot):
             user_timezone=user_timezone,
         )
 
-        await message.answer(
-            f"Will remind you to {todo} at {reminder_datetime.strftime('%Y-%m-%d %H:%M')}"
-        )
+        await message.answer(f"Напомню {todo} в {hour}:{minutes}  {day}.{month}.{year}")
+        total_pages = await get_total_pages(conn=conn, user_id=message.from_user.id)
+        await state.update_data(total_pages=total_pages)
 
         task = asyncio.create_task(
             schedule_reminder(
@@ -657,12 +756,19 @@ def register_handlers(message_router: Router, bot: Bot):
         StateFilter(DatePicker.pick_time), Command(commands="cancel")
     )
     async def cancel_time_pick(message: Message, state: FSMContext):
-        await state.set_state(default_state)
+        await state.set_state(None)
         await message.answer(
-            text="Time pick cancelled. To add new reminder use /remind"
+            text="Выбор времени отменен. Чтобы создать напоминание, используйте команду /r"
         )
         await state.clear()
 
     @message_router.message(StateFilter(DatePicker.pick_time))
     async def wrong_date(message: Message):
-        await message.answer("Please, write a valid time! Format 03:35")
+        await message.answer("Пожалуйста, укажите время в формате 23:15")
+
+    @message_router.message()
+    async def echo(message: Message):
+        user_text = message.text
+        await message.answer(
+            f"Не понял, что вы имели в виду под {user_text}.Чтобы получить список команд, отправьте /help"
+        )
