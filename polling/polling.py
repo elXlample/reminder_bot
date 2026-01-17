@@ -85,11 +85,7 @@ async def main(config: Config):
     dp.update.middleware(DataBaseMiddleware())
     dp.update.middleware(ActivityCounterMiddleware())
 
-    @router.post("/webhook")
-    async def telegram_webhook(request: Request):
-        update = Update.model_validate(await request.json())
-        await dp.feed_update(bot, update)
-        return {"ok": True}
+   
 
     # удаляем webhook, если он был установлен
     ###await bot.delete_webhook(drop_pending_updates=True)
