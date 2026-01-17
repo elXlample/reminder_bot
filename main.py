@@ -23,7 +23,6 @@ from aiogram.client.default import DefaultBotProperties
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await main(app=app)
     bot = Bot(
         token=os.getenv("BOT_TOKEN"),
     )
@@ -41,13 +40,29 @@ async def lifespan(app: FastAPI):
             username=config.redis.username,
         )
     )
-    app.state.storage = storage
+    db_pool: psycopg_pool.AsyncConnectionPool = await get_pg_pool(
+        db_name=config.db.name,
+        host=config.db.host,
+        port=config.db.port,
+        user=config.db.user,
+        password=config.db.password,
+    )
+    app.state.db_pool = db_pool
+
+    async with db_pool.connection() as conn:
+        await restore_tasks(bot=bot, conn=conn)
+        logger.debug("restore_tasks is running")
     dp = create_dispatcher(storage=storage, bot=bot)
+    logger.info("Including middlewares...")
+    dp.update.middleware(DataBaseMiddleware())
+    dp.update.middleware(ActivityCounterMiddleware())
+    app.state.storage = storage
     app.state.dp = dp
     await bot.set_my_commands([])
     await set_main_menu_commands(bot=bot, lang="ru")
     WEBHOOK_URL = os.getenv("WEBHOOK_URL")
     await bot.set_webhook(WEBHOOK_URL)
+
     yield
     await bot.delete_webhook()
     await bot.session.close()
@@ -65,31 +80,10 @@ async def ping():
 
 
 async def main(app: FastAPI):
-    bot = app.state.bot
-    dp = app.state.dp
-    logger = app.state.logger
-    config = app.state.config
-    db_pool: psycopg_pool.AsyncConnectionPool = await get_pg_pool(
-        db_name=config.db.name,
-        host=config.db.host,
-        port=config.db.port,
-        user=config.db.user,
-        password=config.db.password,
-    )
-    app.state.db_pool = db_pool
+    #
 
-    async with db_pool.connection() as conn:
-        await restore_tasks(bot=bot, conn=conn)
-        logger.debug("restore_tasks is running")
-
-    logger.info("Including middlewares...")
-    dp.update.middleware(DataBaseMiddleware())
-    dp.update.middleware(ActivityCounterMiddleware())
-
-    # удаляем webhook, если он был установлен
-    ###await bot.delete_webhook(drop_pending_updates=True)
-    # запускаем polling
-    """ try:
+    # await bot.delete_webhook(drop_pending_updates=True)
+    """try:
         await dp.start_polling(bot, db_pool=db_pool, admin_id=config.bot.admin_id)
     except Exception as e:
         logger.exception(e)
