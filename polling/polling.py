@@ -1,4 +1,6 @@
 from bot.bot import create_dispatcher
+from fastapi import FastAPI
+from webhook.webhook import router as tg_router
 from locales.cmd import commands_ru, commands_en, commands_set_ru, commands_set_en
 from config.config import Config, load_config
 from handlers.handlers import restore_tasks
@@ -53,6 +55,7 @@ async def main(config: Config):
     await set_main_menu_commands(bot=bot, lang="ru")
     commands = await bot.get_my_commands()
     print(commands)
+    app = FastAPI()
 
     storage = RedisStorage(
         redis=Redis(
@@ -64,6 +67,9 @@ async def main(config: Config):
         )
     )
     dp = create_dispatcher(storage=storage, bot=bot)
+    tg_router.bot = bot
+    tg_router.dp = dp
+    app.include_router(tg_router)
     db_pool: psycopg_pool.AsyncConnectionPool = await get_pg_pool(
         db_name=config.db.name,
         host=config.db.host,
@@ -79,16 +85,22 @@ async def main(config: Config):
     dp.update.middleware(DataBaseMiddleware())
     dp.update.middleware(ActivityCounterMiddleware())
 
+    @router.post("/webhook")
+    async def telegram_webhook(request: Request):
+        update = Update.model_validate(await request.json())
+        await dp.feed_update(bot, update)
+        return {"ok": True}
+
     # удаляем webhook, если он был установлен
-    await bot.delete_webhook(drop_pending_updates=True)
+    ###await bot.delete_webhook(drop_pending_updates=True)
     # запускаем polling
-    try:
+    """ try:
         await dp.start_polling(bot, db_pool=db_pool, admin_id=config.bot.admin_id)
     except Exception as e:
         logger.exception(e)
     finally:
         await db_pool.close()
-        logger.info("Connection to Postgres closed")
+        logger.info("Connection to Postgres closed")"""
 
 
 if __name__ == "__main__":
