@@ -46,6 +46,8 @@ async def lifespan(app: FastAPI):
         port=config.db.port,
         user=config.db.user,
         password=config.db.password,
+        min_size=1,
+        max_size=10,
     )
     app.state.db_pool = db_pool
 
@@ -79,16 +81,17 @@ async def ping():
     return {"status": "alive"}
 
 
-@app.on_event("startup")
-async def schedule_restore_tasks():
-    if hasattr(app.state, "bot") and hasattr(app.state, "db_pool"):
+async def start_restore_tasks(app: FastAPI):
+    async def run():
+        # каждое соединение берём заново, чтобы не блокировать пул
+        async with app.state.db_pool.connection() as conn:
+            await restore_tasks(bot=app.state.bot, conn=conn)
+            app.state.logger.info("restore_tasks finished")
 
-        async def run_restore():
-            async with app.state.db_pool.connection() as conn:
-                await restore_tasks(bot=app.state.bot, conn=conn)
+    asyncio.create_task(run())
 
-        # можно через asyncio.create_task
-        asyncio.create_task(run_restore())
+
+start_restore_tasks(app=app)
 
 
 async def main(app: FastAPI):
