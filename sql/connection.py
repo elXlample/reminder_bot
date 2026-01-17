@@ -67,8 +67,8 @@ async def get_pg_pool(
     user: str,
     password: str,
     min_size: int = 1,
-    max_size: int = 3,
-    timeout: float | None = 10.0,
+    max_size: int = 10,
+    timeout: float | None = 20.0,
 ) -> AsyncConnectionPool:
     conninfo = build_pg_conninfo(db_name, host, port, user, password)
     db_pool: AsyncConnectionPool | None = None
