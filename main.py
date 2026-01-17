@@ -79,6 +79,18 @@ async def ping():
     return {"status": "alive"}
 
 
+@app.on_event("startup")
+async def schedule_restore_tasks():
+    if hasattr(app.state, "bot") and hasattr(app.state, "db_pool"):
+
+        async def run_restore():
+            async with app.state.db_pool.connection() as conn:
+                await restore_tasks(bot=app.state.bot, conn=conn)
+
+        # можно через asyncio.create_task
+        asyncio.create_task(run_restore())
+
+
 async def main(app: FastAPI):
     #
 
