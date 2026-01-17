@@ -49,9 +49,9 @@ async def lifespan(app: FastAPI):
     )
     app.state.db_pool = db_pool
 
-    async with db_pool.connection() as conn:
-        await restore_tasks(bot=bot, conn=conn)
-        logger.debug("restore_tasks is running")
+    # async with db_pool.connection() as conn:
+    #  await restore_tasks(bot=bot, conn=conn)
+    # logger.debug("restore_tasks is running")
     dp = create_dispatcher(storage=storage, bot=bot)
     logger.info("Including middlewares...")
     dp.update.middleware(DataBaseMiddleware())
